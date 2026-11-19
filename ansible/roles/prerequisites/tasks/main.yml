@@ -1,0 +1,112 @@
+---
+# ============================================================================
+# prerequisites — durcissement OS Rocky 9 pour GitLab
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Packages de base
+# ----------------------------------------------------------------------------
+- name: Install base packages
+  ansible.builtin.dnf:
+    name: "{{ prerequisites_base_packages }}"
+    state: present
+
+# ----------------------------------------------------------------------------
+# SELinux — enforcing (non-negociable)
+# ----------------------------------------------------------------------------
+- name: Set SELinux state
+  ansible.posix.selinux:
+    state: "{{ prerequisites_selinux_state }}"
+    policy: targeted
+
+- name: Verify SELinux runtime mode
+  ansible.builtin.command: getenforce
+  register: selinux_runtime
+  changed_when: false
+  check_mode: false      # read-only, safe meme en --check
+
+- name: Assert SELinux is enforcing
+  ansible.builtin.assert:
+    that:
+      - selinux_runtime.stdout == 'Enforcing'
+    fail_msg: "SELinux is not in enforcing mode ({{ selinux_runtime.stdout }})"
+    success_msg: "SELinux is enforcing"
+
+# ----------------------------------------------------------------------------
+# sysctl durcissement reseau
+# ----------------------------------------------------------------------------
+- name: Configure kernel sysctl parameters
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-gitlab-hardening.conf
+    reload: true
+  loop: "{{ prerequisites_sysctl_params | dict2items }}"
+
+# ----------------------------------------------------------------------------
+# NTP — chrony actif (GitLab + Gitaly sensibles au temps)
+# ----------------------------------------------------------------------------
+- name: Ensure chronyd is running and enabled
+  ansible.builtin.systemd:
+    name: chronyd
+    state: started
+    enabled: true
+
+# ----------------------------------------------------------------------------
+# Firewalld — actif et ports GitLab ouverts
+# ----------------------------------------------------------------------------
+- name: Ensure firewalld is running and enabled
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Open firewall ports (zone public par defaut)
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ prerequisites_firewall_ports }}"
+
+# Exporters Prometheus non authentifies (node_exporter 9100, gitlab_exporter 9168) :
+# JAMAIS ouverts zone-wide, sinon leurs metriques OS/app fuiteraient vers tout le LAN
+# users du VLAN PROD. On genere une rich rule par couple (source, port) pour
+# n'autoriser QUE les IP des noeuds K8s qui scrapent (SNAT srv_core) = moindre
+# privilege. product() = produit cartesien sources x ports. Idempotent : firewalld
+# n'ajoute la rich rule que si elle est absente.
+- name: Restrict Prometheus exporters to K8s scrape sources only
+  ansible.posix.firewalld:
+    rich_rule: "rule family=ipv4 source address={{ item.0 }} port port={{ item.1 }} protocol=tcp accept"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ gitlab_monitoring_scrape_sources | product([9100, 9168]) | list }}"
+
+# firewalld ne reconcilie PAS les suppressions : 9100/9168 avaient ete ouverts
+# zone-wide par un run anterieur (ancienne liste gitlab_firewall_ports) et y
+# restent tant qu'on ne les ferme pas explicitement. On les DESACTIVE en zone
+# publique -> seules les rich rules ci-dessus (sources K8s) subsistent.
+- name: Close legacy zone-wide monitoring ports (now scoped by rich rules)
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: disabled
+  loop:
+    - "9100/tcp"
+    - "9168/tcp"
+
+# ----------------------------------------------------------------------------
+# /etc/hosts — self-resolution (evite les soucis si le DNS tombe)
+# ----------------------------------------------------------------------------
+- name: Configure /etc/hosts entries
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED GITLAB SELF-RESOLUTION"
+    block: |
+      {% for entry in prerequisites_etc_hosts_entries %}
+      {{ entry.ip }} {{ entry.names | join(' ') }}
+      {% endfor %}
+    create: false

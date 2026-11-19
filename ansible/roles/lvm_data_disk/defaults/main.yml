@@ -1,0 +1,14 @@
+---
+# ============================================================================
+# lvm_data_disk — defauts (overridables par group_vars)
+# ============================================================================
+# Les valeurs reelles viennent de group_vars/gitlab.yml (gitlab_data_disk)
+# ============================================================================
+
+lvm_device:      "{{ gitlab_data_disk.device }}"
+lvm_vg_name:     "{{ gitlab_data_disk.vg_name }}"
+lvm_lv_name:     "{{ gitlab_data_disk.lv_name }}"
+lvm_mount_point: "{{ gitlab_data_disk.mount_point }}"
+lvm_fstype:      "{{ gitlab_data_disk.fstype }}"
+lvm_size:        "{{ gitlab_data_disk.size }}"
+lvm_fstab_opts:  "{{ gitlab_data_disk.fstab_opts }}"

@@ -1,0 +1,46 @@
+---
+# ============================================================================
+# prerequisites — defauts (overridables par group_vars)
+# ============================================================================
+# Durcissement OS minimal pour une VM GitLab sur Rocky 9 CIS.
+# ============================================================================
+
+# SELinux — doit etre enforcing (non-negociable en prod)
+prerequisites_selinux_state: enforcing
+
+# firewalld — liste des ports a ouvrir (depuis group_vars/gitlab.yml)
+# Defini dans group_vars/gitlab.yml comme gitlab_firewall_ports
+prerequisites_firewall_ports: "{{ gitlab_firewall_ports }}"
+
+# sysctl de durcissement reseau (ANSSI-friendly)
+prerequisites_sysctl_params:
+  # IP forwarding desactive (VM non-routeur)
+  net.ipv4.ip_forward: 0
+  # Anti-spoofing : verifie que les paquets ont une route de retour
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  # Pas de redirect ICMP (anti-MITM)
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  # Pas de source routing (anti-spoofing)
+  net.ipv4.conf.all.accept_source_route: 0
+  # Log des paquets martiens
+  net.ipv4.conf.all.log_martians: 1
+  # TCP SYN cookies (anti-SYN flood)
+  net.ipv4.tcp_syncookies: 1
+
+# Packages de base requis pour GitLab et admin
+prerequisites_base_packages:
+  - curl
+  - policycoreutils-python-utils     # pour semanage (SELinux)
+  - firewalld
+  - chrony                            # NTP (important pour gitaly/timestamps)
+  - lvm2                              # LVM utils pour le disque data
+  - xfsprogs                          # outils XFS pour mkfs
+
+# /etc/hosts entry pour self-resolution
+prerequisites_etc_hosts_entries:
+  - ip: "{{ gitlab_ips.prod.address }}"
+    names:
+      - "{{ gitlab_hostname }}.{{ gitlab_domain }}"
+      - "{{ gitlab_hostname }}"

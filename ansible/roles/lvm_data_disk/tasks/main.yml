@@ -1,0 +1,81 @@
+---
+# ============================================================================
+# lvm_data_disk — prepare le 2eme VMDK pour /var/opt/gitlab
+# ============================================================================
+# Flow :
+#   /dev/sdb (100 Go, vide) -> pvcreate -> vgcreate -> lvcreate -> mkfs -> mount
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Verifier que le device existe (sinon, Terraform n'a pas cree le 2e disque)
+# ----------------------------------------------------------------------------
+- name: Verify data disk device exists
+  ansible.builtin.stat:
+    path: "{{ lvm_device }}"
+  register: data_disk_stat
+
+- name: Assert data disk is present
+  ansible.builtin.assert:
+    that:
+      - data_disk_stat.stat.exists
+      - data_disk_stat.stat.isblk
+    fail_msg: "{{ lvm_device }} is missing or not a block device. Terraform should have provisioned it."
+
+# ----------------------------------------------------------------------------
+# Physical Volume sur /dev/sdb
+# ----------------------------------------------------------------------------
+- name: Create LVM physical volume on {{ lvm_device }}
+  community.general.lvg:
+    vg: "{{ lvm_vg_name }}"
+    pvs: "{{ lvm_device }}"
+    state: present
+
+# ----------------------------------------------------------------------------
+# Logical Volume prenant tout l'espace disponible
+# ----------------------------------------------------------------------------
+- name: Create LVM logical volume {{ lvm_lv_name }}
+  community.general.lvol:
+    vg:   "{{ lvm_vg_name }}"
+    lv:   "{{ lvm_lv_name }}"
+    size: "{{ lvm_size }}"
+    resizefs: true
+    state: present
+
+# ----------------------------------------------------------------------------
+# Filesystem XFS (bon pour GitLab : metadata-heavy, extensible)
+# ----------------------------------------------------------------------------
+- name: Format logical volume as {{ lvm_fstype }}
+  community.general.filesystem:
+    fstype: "{{ lvm_fstype }}"
+    dev:    "/dev/{{ lvm_vg_name }}/{{ lvm_lv_name }}"
+
+# ----------------------------------------------------------------------------
+# Mount point et entry fstab persistante
+# ----------------------------------------------------------------------------
+- name: Ensure mount point directory exists
+  ansible.builtin.file:
+    path:  "{{ lvm_mount_point }}"
+    state: directory
+    mode:  '0755'
+    owner: root
+    group: root
+
+- name: Mount the filesystem and add to fstab
+  ansible.posix.mount:
+    path:    "{{ lvm_mount_point }}"
+    src:     "/dev/{{ lvm_vg_name }}/{{ lvm_lv_name }}"
+    fstype:  "{{ lvm_fstype }}"
+    opts:    "{{ lvm_fstab_opts }}"
+    state:   mounted
+
+# ----------------------------------------------------------------------------
+# Verification finale
+# ----------------------------------------------------------------------------
+- name: Verify mount is active
+  ansible.builtin.command: findmnt -n -o TARGET,SOURCE,FSTYPE "{{ lvm_mount_point }}"
+  register: mount_check
+  changed_when: false
+
+- name: Display mount info
+  ansible.builtin.debug:
+    msg: "{{ lvm_mount_point }} -> {{ mount_check.stdout }}"
